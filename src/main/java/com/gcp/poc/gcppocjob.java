@@ -110,6 +110,30 @@ public class gcppocjob
 	}
 	
 	/**
+	 * StringToRowConverterFirstJoin to convert the String into TableRow
+	 * @author kosalan
+	 */
+	static class StringToRowConverterSecondJoin extends DoFn<String, TableRow> {
+		private static final long serialVersionUID = 1L;
+
+		@Override
+		public void processElement(ProcessContext c) {
+			String inputline = c.element();
+			String[] split = inputline.split("%");
+			TableRow outputrow = new TableRow();
+			outputrow.set("UserID", split[0]);
+			outputrow.set("AdUnitID", split[1]);
+			outputrow.set("ClientID", split[2]);
+			outputrow.set("GfpActivityAdEventTIme", split[3]);
+			outputrow.set("ContentID", split[4]);
+			outputrow.set("Publisher", split[5]);
+			outputrow.set("OS", split[6]);
+			outputrow.set("PostalCode", split[7]);
+			c.output(outputrow);
+		}
+	}
+	
+	/**
 	 * Examines each row (ImpressionTable) in the input table. Output a KV with
 	 * the key the UserID code of the Impression, and the value a string
 	 * encoding Impression information.
@@ -354,6 +378,8 @@ public class gcppocjob
 		 //PCollection<String> formattedResults = joinEvents(ImpressionTable, AdTable);
 		 PCollection<String> formattedResults = joinEvents(Impression_row, Ad_row, User_row);
 		 formattedResults.apply(TextIO.Write.to("gs://gcppocbucket/cloudstorage/output.txt").withoutSharding());
+		 PCollection<TableRow> secondjoint = formattedResults.apply("Changing Second Join String to TableRow", ParDo.of(new StringToRowConverterSecondJoin()));
+		 secondjoint.apply(BigQueryIO.Write.named("Write to BQ").to("gcpbigdatapoc:gcppocdataset.doubleclickdata_warehouse").withWriteDisposition(BigQueryIO.Write.WriteDisposition.WRITE_TRUNCATE).withCreateDisposition(BigQueryIO.Write.CreateDisposition.CREATE_NEVER));
 		 //PCollection<TableRow> firstjoint = formattedResults.apply("Changing First Join String to TableRow", ParDo.of(new StringToRowConverterFirstJoin()));
 		// firstjoint.apply(BigQueryIO.Write.named("Write to BQ").to("gcpbigdatapoc:gcppocdataset.firstjoint").withWriteDisposition(BigQueryIO.Write.WriteDisposition.WRITE_TRUNCATE).withCreateDisposition(BigQueryIO.Write.CreateDisposition.CREATE_NEVER));
 		 
