@@ -88,6 +88,28 @@ public class gcppocjob
 	}
 	
 	/**
+	 * StringToRowConverterFirstJoin to convert the String into TableRow
+	 * @author kosalan
+	 */
+	static class StringToRowConverterFirstJoin extends DoFn<String, TableRow> {
+		private static final long serialVersionUID = 1L;
+
+		@Override
+		public void processElement(ProcessContext c) {
+			String inputline = c.element();
+			String[] split = inputline.split("%");
+			TableRow outputrow = new TableRow();
+			outputrow.set("AdUnitID", split[0]);
+			outputrow.set("UserID", split[1]);
+			outputrow.set("ClientID", split[2]);
+			outputrow.set("GfpActivityAdEventTIme", split[3]);
+			outputrow.set("ContentID", split[4]);
+			outputrow.set("Publisher", split[5]);
+			c.output(outputrow);
+		}
+	}
+	
+	/**
 	 * Examines each row (ImpressionTable) in the input table. Output a KV with
 	 * the key the UserID code of the Impression, and the value a string
 	 * encoding Impression information.
@@ -102,7 +124,8 @@ public class gcppocjob
 			String User_ID = (String) row.get("UserID");
 			String Client_ID = (String) row.get("ClientID");
 			String Impr_Time = (String) row.get("GfpActivityAdEventTIme");
-		    String ImprInfo = "UserID: " + User_ID + ", ClientID: " + Client_ID + ", GfpActivityAdEventTIme: " + Impr_Time;
+		    //String ImprInfo = "UserID: " + User_ID + " ClientID: " + Client_ID + " GfpActivityAdEventTIme: " + Impr_Time;
+		    String ImprInfo = User_ID + "%" + Client_ID + "%" + Impr_Time;
 			c.output(KV.of(Ad_ID, ImprInfo));
 		}
 	}
@@ -120,7 +143,8 @@ public class gcppocjob
 			String Ad_ID = (String) row.get("AdUnitID");
 			String Content_ID = (String) row.get("ContentID");
 			String Pub_ID = (String) row.get("Publisher");
-			String Add_Info = "ContentID: " + Content_ID + ", Publisher: " + Pub_ID;
+			//String Add_Info = "ContentID: " + Content_ID + " Publisher: " + Pub_ID;
+			String Add_Info = Content_ID + "%" + Pub_ID;
 			c.output(KV.of(Ad_ID, Add_Info));
 		}
 	}
@@ -138,10 +162,12 @@ public class gcppocjob
 			String User_ID = (String) row.get("UserID");
 			String OS_ID = (String) row.get("OS");
 			String Post_ID = (String) row.get("PostalCode");
-			String User_Info = "OS: " + OS_ID + ", PostalCode: " + Post_ID;
+			//String User_Info = "OS: " + OS_ID + " PostalCode: " + Post_ID;
+			String User_Info = OS_ID + "%" + Post_ID;
 			c.output(KV.of(User_ID, User_Info));
 		}
 	}
+
 	
 	  /**
 	   * Join two collections, using country code as the key.
@@ -184,12 +210,11 @@ public class gcppocjob
 	          public void processElement(ProcessContext c) {
 	            KV<String, CoGbkResult> e = c.element();
 	            String Ad_ID = e.getKey();
-	            String Ad_Info = "none";
-	            Ad_Info = e.getValue().getOnly(AdInfoTag);
-	            for (String eventInfo : c.element().getValue().getAll(ImpressionInfoTag)) {
-	              // Generate a string that combines information from both collection values
-	              c.output(KV.of(Ad_ID, " " + Ad_Info
-	                      + " " + eventInfo));
+	            Iterable<String> Ad_Info = null;
+	            Ad_Info = e.getValue().getAll(AdInfoTag);
+	            for (String ImpressionInfo : c.element().getValue().getAll(ImpressionInfoTag)) {
+	              // Generate a string that combines information from both collection values	
+	              c.output(KV.of(Ad_ID, "%" + ImpressionInfo + "%" + Ad_Info));
 	            }
 	          }
 	      }));
@@ -197,13 +222,30 @@ public class gcppocjob
 	     //write to GCS
 	    PCollection<String> formattedResults = finalResultCollection
 	        .apply(ParDo.named("Format").of(new DoFn<KV<String, String>, String>() {
-	          @Override
+				private static final long serialVersionUID = 1L;
+
+			@Override
 	          public void processElement(ProcessContext c) {
-	            String outputstring = "AdUnitID: " + c.element().getKey()
-	                + ", " + c.element().getValue();
-	            c.output(outputstring);
+	        	
+	            String outputstring = c.element().getKey() + c.element().getValue();
+	            
+	            int jointbegin = outputstring.indexOf("[");
+	            String firsthalf = outputstring.substring(0,jointbegin);
+	            String secondhalf = outputstring.substring(outputstring.indexOf("[") + 1, outputstring.indexOf("]"));
+	            
+	            if (!secondhalf.isEmpty())
+	            {
+	            	String[] ad_data = secondhalf.split(",");
+	            	
+	            	for (int i = 0; i < ad_data.length; i++)
+	            	{
+	            		String final_string = firsthalf + ad_data[i];
+	            		c.output(final_string);
+	            	}
+	            }
 	          }
 	        }));
+
 	    return formattedResults;
 	  }
 
@@ -235,17 +277,20 @@ public class gcppocjob
 		 PCollection<TableRow> Impression_row = Impression_line.apply("Changing Impression_Line to Impression_row", ParDo.of(new StringToRowConverterImpression()).named("Changing Impression.csv to Impression Table"));
 			  
 		 //Loading the PCollection to BigQuery Table 
-		 Ad_row.apply(BigQueryIO.Write.named("Writing to Bigquery").to("gcpbigdatapoc:gcppocdataset.Advertisement").withWriteDisposition(BigQueryIO.Write.WriteDisposition.WRITE_TRUNCATE).withCreateDisposition(BigQueryIO.Write.CreateDisposition.CREATE_NEVER));
-		 User_row.apply(BigQueryIO.Write.named("Writing to Bigquery").to("gcpbigdatapoc:gcppocdataset.Users").withWriteDisposition(BigQueryIO.Write.WriteDisposition.WRITE_TRUNCATE).withCreateDisposition(BigQueryIO.Write.CreateDisposition.CREATE_NEVER));
-		 Impression_row.apply(BigQueryIO.Write.named("Writing to Bigquery").to("gcpbigdatapoc:gcppocdataset.Impression").withWriteDisposition(BigQueryIO.Write.WriteDisposition.WRITE_TRUNCATE).withCreateDisposition(BigQueryIO.Write.CreateDisposition.CREATE_NEVER));
+		 //Ad_row.apply(BigQueryIO.Write.named("Writing to Bigquery").to("gcpbigdatapoc:gcppocdataset.Advertisement").withWriteDisposition(BigQueryIO.Write.WriteDisposition.WRITE_TRUNCATE).withCreateDisposition(BigQueryIO.Write.CreateDisposition.CREATE_NEVER));
+		 //User_row.apply(BigQueryIO.Write.named("Writing to Bigquery").to("gcpbigdatapoc:gcppocdataset.Users").withWriteDisposition(BigQueryIO.Write.WriteDisposition.WRITE_TRUNCATE).withCreateDisposition(BigQueryIO.Write.CreateDisposition.CREATE_NEVER));
+		 //Impression_row.apply(BigQueryIO.Write.named("Writing to Bigquery").to("gcpbigdatapoc:gcppocdataset.Impression").withWriteDisposition(BigQueryIO.Write.WriteDisposition.WRITE_TRUNCATE).withCreateDisposition(BigQueryIO.Write.CreateDisposition.CREATE_NEVER));
 		 
 		 //Load BigQuery Table into New PCollection
-		 PCollection<TableRow> AdTable = p.apply(BigQueryIO.Read.from("gcpbigdatapoc:gcppocdataset.Advertisement"));
-		 PCollection<TableRow> UserTable = p.apply(BigQueryIO.Read.from("gcpbigdatapoc:gcppocdataset.Users"));
-		 PCollection<TableRow> ImpressionTable = p.apply(BigQueryIO.Read.from("gcpbigdatapoc:gcppocdataset.Impression"));
+		 //PCollection<TableRow> AdTable = p.apply(BigQueryIO.Read.from("gcpbigdatapoc:gcppocdataset.Advertisement"));
+		 //PCollection<TableRow> UserTable = p.apply(BigQueryIO.Read.from("gcpbigdatapoc:gcppocdataset.Users"));
+		// PCollection<TableRow> ImpressionTable = p.apply(BigQueryIO.Read.from("gcpbigdatapoc:gcppocdataset.Impression"));
 		 
-		 PCollection<String> formattedResults = joinEvents(ImpressionTable, AdTable);
-		 formattedResults.apply(TextIO.Write.to("gs://gcppocbucket/cloudstorage/output.txt"));
+		 //PCollection<String> formattedResults = joinEvents(ImpressionTable, AdTable);
+		 PCollection<String> formattedResults = joinEvents(Impression_row, Ad_row);
+		 formattedResults.apply(TextIO.Write.to("gs://gcppocbucket/cloudstorage/output.txt").withoutSharding());
+		 PCollection<TableRow> firstjoint = formattedResults.apply("Changing First Join String to TableRow", ParDo.of(new StringToRowConverterFirstJoin()));
+		 firstjoint.apply(BigQueryIO.Write.named("Write to BQ").to("gcpbigdatapoc:gcppocdataset.firstjoint").withWriteDisposition(BigQueryIO.Write.WriteDisposition.WRITE_TRUNCATE).withCreateDisposition(BigQueryIO.Write.CreateDisposition.CREATE_NEVER));
 		 
 		 p.run();
 		 
