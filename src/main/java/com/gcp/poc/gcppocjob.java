@@ -167,24 +167,39 @@ public class gcppocjob
 			c.output(KV.of(User_ID, User_Info));
 		}
 	}
+	
+	/**
+	 * Examines each row (FirstJoin) in the input table. Output a KV with the
+	 * key the UserID code, and the value the UserInfo name.
+	 */
+	static class ExtractFirstJoinDataInfoFn extends DoFn<TableRow, KV<String, String>> {
+		private static final long serialVersionUID = 1L;
+
+		@Override
+		public void processElement(ProcessContext c) {
+			TableRow row = c.element();
+			String Ad_ID = (String) row.get("AdUnitID");
+			String User_ID = (String) row.get("UserID");
+			String Client_ID = (String) row.get("ClientID");
+			String Impr_Time = (String) row.get("GfpActivityAdEventTIme");
+			String Content_ID = (String) row.get("ContentID");
+			String Pub = (String) row.get("Publisher");
+
+			String Joint_Info = Ad_ID + "%" + Client_ID + "%" + Impr_Time + "%" + Content_ID + "%" + Pub;
+			c.output(KV.of(User_ID, Joint_Info));
+		}
+	}
 
 	
 	  /**
 	   * Join two collections, using country code as the key.
-	   * eventsTable -- > ImpressionTable
-	   * CountryCodes -- > AdTable
-	   * eventInfoTag -- > ImpressionInfoTag
-	   * countryInfoTag --> AdInfoTag
-	   * eventInfo --> ImpressionInfo
-	   * countryInfo -- > AdInfo
-	   * CountryCode --> Ad_ID
-	   * countryName --> Ad_Info
 	   */
 	  static PCollection<String> joinEvents(PCollection<TableRow> ImpressionTable,
-	      PCollection<TableRow> AdTable) throws Exception {
+	      PCollection<TableRow> AdTable, PCollection<TableRow> UserTable) throws Exception {
 
 	    final TupleTag<String> ImpressionInfoTag = new TupleTag<String>();
 	    final TupleTag<String> AdInfoTag = new TupleTag<String>();
+	    final TupleTag<String> UserInfoTag = new TupleTag<String>();
 
 	    // transform both input collections to tuple collections, where the keys are country
 	    // codes in both cases.
@@ -192,6 +207,7 @@ public class gcppocjob
 	        ParDo.of(new ExtractImpressionDataInfoFn()));
 	    PCollection<KV<String, String>> AdInfo = AdTable.apply(
 	        ParDo.of(new ExtractAdDataInfoFn()));
+	    PCollection<KV<String, String>> UserInfo = UserTable.apply(ParDo.of(new ExtractUserDataInfoFn()));
 
 	    // country code 'key' -> CGBKR (<event info>, <country name>)
 	    PCollection<KV<String, CoGbkResult>> kvpCollection = KeyedPCollectionTuple
@@ -245,8 +261,57 @@ public class gcppocjob
 	            }
 	          }
 	        }));
+	    
+	    PCollection<TableRow> FirstJointTable = formattedResults.apply("Changing First Join String to TableRow", ParDo.of(new StringToRowConverterFirstJoin()));
+	    final TupleTag<String> FirstJointInfoTag = new TupleTag<String>();
+	    PCollection<KV<String, String>> FirstJoinInfo = FirstJointTable.apply(ParDo.of(new ExtractFirstJoinDataInfoFn()));
+	    
+	    PCollection<KV<String, CoGbkResult>> kvpCollection2 = KeyedPCollectionTuple.of(FirstJointInfoTag, FirstJoinInfo).and(UserInfoTag, UserInfo).apply(CoGroupByKey.<String>create());
 
-	    return formattedResults;
+	    PCollection<KV<String, String>> finalResultCollection2 = kvpCollection2.apply(ParDo.named("Process").of(new DoFn<KV<String, CoGbkResult>, KV<String, String>>() {
+	  				private static final long serialVersionUID = 1L;
+
+	  			@Override
+	  	          public void processElement(ProcessContext c) {
+	  	            KV<String, CoGbkResult> e = c.element();
+	  	            String User_ID = e.getKey();
+	  	            Iterable<String> User_Info = null;
+	  	            User_Info = e.getValue().getAll(UserInfoTag);
+	  	            for (String FirstJointInfo : c.element().getValue().getAll(FirstJointInfoTag)) {
+	  	              // Generate a string that combines information from both collection values	
+	  	              c.output(KV.of(User_ID, "%" + FirstJointInfo + "%" + User_Info));
+	  	            }
+	  	          }
+	  	      }));
+	    
+	  //write to GCS
+	    PCollection<String> formattedResults2 = finalResultCollection2
+	        .apply(ParDo.named("Format").of(new DoFn<KV<String, String>, String>() {
+				private static final long serialVersionUID = 1L;
+
+			@Override
+	          public void processElement(ProcessContext c) {
+	        	
+	            String outputstring2 = c.element().getKey() + c.element().getValue();
+	            
+	            int jointbegin = outputstring2.indexOf("[");
+	            String firsthalf = outputstring2.substring(0,jointbegin);
+	            String secondhalf = outputstring2.substring(outputstring2.indexOf("[") + 1, outputstring2.indexOf("]"));
+	            
+	            if (!secondhalf.isEmpty())
+	            {
+	            	String[] user_data = secondhalf.split(",");
+	            	
+	            	for (int i = 0; i < user_data.length; i++)
+	            	{
+	            		String final_string = firsthalf + user_data[i];
+	            		c.output(final_string);
+	            	}
+	            }
+	          }
+	        }));
+
+	    return formattedResults2;
 	  }
 
 	
@@ -287,10 +352,10 @@ public class gcppocjob
 		// PCollection<TableRow> ImpressionTable = p.apply(BigQueryIO.Read.from("gcpbigdatapoc:gcppocdataset.Impression"));
 		 
 		 //PCollection<String> formattedResults = joinEvents(ImpressionTable, AdTable);
-		 PCollection<String> formattedResults = joinEvents(Impression_row, Ad_row);
+		 PCollection<String> formattedResults = joinEvents(Impression_row, Ad_row, User_row);
 		 formattedResults.apply(TextIO.Write.to("gs://gcppocbucket/cloudstorage/output.txt").withoutSharding());
-		 PCollection<TableRow> firstjoint = formattedResults.apply("Changing First Join String to TableRow", ParDo.of(new StringToRowConverterFirstJoin()));
-		 firstjoint.apply(BigQueryIO.Write.named("Write to BQ").to("gcpbigdatapoc:gcppocdataset.firstjoint").withWriteDisposition(BigQueryIO.Write.WriteDisposition.WRITE_TRUNCATE).withCreateDisposition(BigQueryIO.Write.CreateDisposition.CREATE_NEVER));
+		 //PCollection<TableRow> firstjoint = formattedResults.apply("Changing First Join String to TableRow", ParDo.of(new StringToRowConverterFirstJoin()));
+		// firstjoint.apply(BigQueryIO.Write.named("Write to BQ").to("gcpbigdatapoc:gcppocdataset.firstjoint").withWriteDisposition(BigQueryIO.Write.WriteDisposition.WRITE_TRUNCATE).withCreateDisposition(BigQueryIO.Write.CreateDisposition.CREATE_NEVER));
 		 
 		 p.run();
 		 
