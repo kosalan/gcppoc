@@ -356,6 +356,7 @@ public class gcppocjob {
 		options.setRunner(BlockingDataflowPipelineRunner.class);
 		options.setProject("gcpbigdatapoc");
 		options.setStagingLocation("gs://gcppocbucket/staging/");
+		options.setNumWorkers(15);
 
 		// Creating a Pipeline
 		Pipeline p = Pipeline.create(options);
